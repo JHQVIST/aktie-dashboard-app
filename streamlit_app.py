@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 st.set_page_config(
     page_title="Aktie-dashboard",
@@ -47,6 +48,41 @@ def get_trend_status(price, sma_50, sma_200):
     if price < sma_50 and sma_50 < sma_200:
         return "Negativ"
     return "Blandad"
+
+
+def calculate_risk_metrics(data):
+    close = data["Close"].dropna()
+
+    daily_returns = close.pct_change().dropna()
+    annual_volatility = daily_returns.std() * np.sqrt(252)
+
+    running_max = close.cummax()
+    drawdown = close / running_max - 1
+    max_drawdown = drawdown.min()
+
+    latest_price = close.iloc[-1]
+
+    return_3m = None
+    return_6m = None
+    return_1y = None
+
+    if len(close) >= 64:
+        return_3m = latest_price / close.iloc[-64] - 1
+
+    if len(close) >= 127:
+        return_6m = latest_price / close.iloc[-127] - 1
+
+    if len(close) >= 253:
+        return_1y = latest_price / close.iloc[-253] - 1
+
+    return {
+        "annual_volatility": annual_volatility,
+        "max_drawdown": max_drawdown,
+        "return_3m": return_3m,
+        "return_6m": return_6m,
+        "return_1y": return_1y,
+        "drawdown": drawdown,
+    }
 
 
 def make_insight(stock_data):
@@ -191,10 +227,10 @@ def load_watchlist(watchlist):
 
 
 st.title("📈 Aktie-dashboard")
-st.write("Sök aktier, analysera trend och jämför en egen watchlist.")
+st.write("Sök aktier, analysera trend, risk och jämför en egen watchlist.")
 
-tab_overview, tab_watchlist, tab_insights = st.tabs(
-    ["Aktieöversikt", "Watchlist", "AI-insikter"]
+tab_overview, tab_watchlist, tab_insights, tab_risk = st.tabs(
+    ["Aktieöversikt", "Watchlist", "AI-insikter", "Risk & avkastning"]
 )
 
 with tab_overview:
@@ -238,6 +274,7 @@ with tab_overview:
                     "forward_pe": forward_pe,
                     "profit_margin": profit_margin,
                     "dividend_yield": dividend_yield,
+                    "data": data,
                 }
 
                 col1, col2, col3 = st.columns(3)
@@ -409,4 +446,61 @@ with tab_insights:
             "nyckeltal från Yahoo Finance. Den omfattar inte nyheter, "
             "rapporter, räntor, estimatrevideringar eller din egen "
             "risksituation. Detta är inte investeringsråd."
+        )
+
+with tab_risk:
+    st.subheader("Risk & avkastning")
+    st.write(
+        "Historiska riskmått för den aktie du senast hämtade i "
+        "Aktieöversikt."
+    )
+
+    if "selected_stock" not in st.session_state:
+        st.info(
+            "Gå först till Aktieöversikt, välj en aktie och klicka "
+            "på “Hämta kurs”."
+        )
+    else:
+        stock_data = st.session_state["selected_stock"]
+        risk_data = calculate_risk_metrics(stock_data["data"])
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Avkastning 3 månader",
+            format_percent(risk_data["return_3m"]),
+        )
+        col2.metric(
+            "Avkastning 6 månader",
+            format_percent(risk_data["return_6m"]),
+        )
+        col3.metric(
+            "Avkastning 1 år",
+            format_percent(risk_data["return_1y"]),
+        )
+
+        st.divider()
+
+        col1, col2 = st.columns(2)
+
+        col1.metric(
+            "Årlig volatilitet",
+            format_percent(risk_data["annual_volatility"]),
+        )
+        col2.metric(
+            "Max drawdown",
+            format_percent(risk_data["max_drawdown"]),
+        )
+
+        st.subheader("Drawdown från tidigare topp")
+
+        drawdown_chart = risk_data["drawdown"].to_frame(name="Drawdown")
+        st.area_chart(drawdown_chart)
+
+        st.caption(
+            "Årlig volatilitet bygger på dagliga kursförändringar och "
+            "räknas om till årstakt med 252 handelsdagar. Max drawdown "
+            "är den största historiska nedgången från en tidigare topp "
+            "under den hämtade perioden. Historisk risk är inte en "
+            "garanti för framtida risk."
         )
