@@ -9,13 +9,10 @@ st.set_page_config(
     layout="wide",
 )
 
-WATCHLIST = {
-    "Volvo B": "VOLV-B.ST",
-    "Investor B": "INVE-B.ST",
-    "Atlas Copco A": "ATCO-A.ST",
-    "Apple": "AAPL",
-    "Microsoft": "MSFT",
-}
+DEFAULT_TICKERS = (
+    "VOLV-B.ST, INVE-B.ST, ATCO-A.ST, "
+    "AAPL, MSFT"
+)
 
 
 def format_number(value, decimals=2):
@@ -50,16 +47,23 @@ def get_trend_status(price, sma_50, sma_200):
     return "Blandad"
 
 
+def get_trend_score(trend):
+    scores = {
+        "Positiv": 2,
+        "Blandad": 1,
+        "Negativ": 0,
+    }
+    return scores.get(trend, -1)
+
+
 def calculate_risk_metrics(data):
     close = data["Close"].dropna()
-
     daily_returns = close.pct_change().dropna()
     annual_volatility = daily_returns.std() * np.sqrt(252)
 
     running_max = close.cummax()
     drawdown = close / running_max - 1
     max_drawdown = drawdown.min()
-
     latest_price = close.iloc[-1]
 
     return_3m = None
@@ -172,10 +176,10 @@ def make_insight(stock_data):
 
 
 @st.cache_data(ttl=3600)
-def load_watchlist(watchlist):
+def load_watchlist(tickers):
     rows = []
 
-    for company, ticker in watchlist.items():
+    for ticker in tickers:
         try:
             stock = yf.Ticker(ticker)
             data = stock.history(period="1y")
@@ -184,7 +188,6 @@ def load_watchlist(watchlist):
             if data.empty or len(data) < 200:
                 rows.append(
                     {
-                        "Bolag": company,
                         "Ticker": ticker,
                         "Status": "För lite data",
                     }
@@ -200,13 +203,15 @@ def load_watchlist(watchlist):
             sma_50 = data["SMA 50"].iloc[-1]
             sma_200 = data["SMA 200"].iloc[-1]
 
+            trend = get_trend_status(price, sma_50, sma_200)
+
             rows.append(
                 {
-                    "Bolag": company,
                     "Ticker": ticker,
                     "Kurs": price,
                     "1M": monthly_change,
-                    "Trend": get_trend_status(price, sma_50, sma_200),
+                    "Trend": trend,
+                    "Trendpoäng": get_trend_score(trend),
                     "P/E": info.get("trailingPE"),
                     "Forward P/E": info.get("forwardPE"),
                     "Direktavkastning": info.get("dividendYield"),
@@ -217,7 +222,6 @@ def load_watchlist(watchlist):
         except Exception:
             rows.append(
                 {
-                    "Bolag": company,
                     "Ticker": ticker,
                     "Status": "Kunde inte hämta data",
                 }
@@ -230,7 +234,12 @@ st.title("📈 Aktie-dashboard")
 st.write("Sök aktier, analysera trend, risk och jämför en egen watchlist.")
 
 tab_overview, tab_watchlist, tab_insights, tab_risk = st.tabs(
-    ["Aktieöversikt", "Watchlist", "AI-insikter", "Risk & avkastning"]
+    [
+        "Aktieöversikt",
+        "Watchlist",
+        "AI-insikter",
+        "Risk & avkastning",
+    ]
 )
 
 with tab_overview:
@@ -340,46 +349,96 @@ with tab_overview:
 with tab_watchlist:
     st.subheader("Min watchlist")
     st.write(
-        "Jämför kursutveckling, trend och grundläggande "
-        "värderingsmått för utvalda bolag."
+        "Skriv egna tickers, separerade med kommatecken. "
+        "Svenska aktier behöver normalt suffixet .ST."
+    )
+
+    ticker_text = st.text_area(
+        "Mina tickers",
+        value=DEFAULT_TICKERS,
+        help=(
+            "Exempel: VOLV-B.ST, INVE-B.ST, ATCO-A.ST, "
+            "LIFCO-B.ST, AAPL, MSFT, NVDA"
+        ),
+    )
+
+    tickers = [
+        ticker.strip().upper()
+        for ticker in ticker_text.split(",")
+        if ticker.strip()
+    ]
+
+    sort_column = st.selectbox(
+        "Sortera efter",
+        [
+            "Ticker",
+            "1M",
+            "P/E",
+            "Forward P/E",
+            "Direktavkastning",
+            "Trendpoäng",
+        ],
+        index=1,
+    )
+
+    sort_ascending = st.toggle(
+        "Sortera stigande",
+        value=False,
     )
 
     if st.button("Uppdatera watchlist"):
         st.cache_data.clear()
 
     with st.spinner("Hämtar data för watchlist..."):
-        watchlist_data = load_watchlist(WATCHLIST)
+        watchlist_data = load_watchlist(tickers)
 
     if watchlist_data.empty:
         st.error("Kunde inte hämta data till watchlisten.")
     else:
-        if "Kurs" in watchlist_data.columns:
-            watchlist_data["Kurs"] = watchlist_data["Kurs"].apply(
+        if sort_column in watchlist_data.columns:
+            watchlist_data = watchlist_data.sort_values(
+                by=sort_column,
+                ascending=sort_ascending,
+                na_position="last",
+            )
+
+        display_data = watchlist_data.copy()
+
+        if "Kurs" in display_data.columns:
+            display_data["Kurs"] = display_data["Kurs"].apply(
                 format_number
             )
-            watchlist_data["1M"] = watchlist_data["1M"].apply(
+
+        if "1M" in display_data.columns:
+            display_data["1M"] = display_data["1M"].apply(
                 lambda value: (
                     f"{value * 100:.1f}%"
                     if pd.notna(value)
                     else "Saknas"
                 )
             )
-            watchlist_data["P/E"] = watchlist_data["P/E"].apply(
+
+        if "P/E" in display_data.columns:
+            display_data["P/E"] = display_data["P/E"].apply(
                 format_number
             )
-            watchlist_data["Forward P/E"] = watchlist_data[
+
+        if "Forward P/E" in display_data.columns:
+            display_data["Forward P/E"] = display_data[
                 "Forward P/E"
             ].apply(format_number)
-            watchlist_data["Direktavkastning"] = watchlist_data[
+
+        if "Direktavkastning" in display_data.columns:
+            display_data["Direktavkastning"] = display_data[
                 "Direktavkastning"
             ].apply(format_percent)
 
         columns = [
-            "Bolag",
             "Ticker",
             "Kurs",
             "1M",
             "Trend",
+            "Trendpoäng",
             "P/E",
             "Forward P/E",
             "Direktavkastning",
@@ -387,18 +446,19 @@ with tab_watchlist:
         ]
 
         visible_columns = [
-            column for column in columns
-            if column in watchlist_data.columns
+            column
+            for column in columns
+            if column in display_data.columns
         ]
 
         st.dataframe(
-            watchlist_data[visible_columns],
+            display_data[visible_columns],
             use_container_width=True,
             hide_index=True,
         )
 
     st.caption(
-        "Watchlisten cache:as i upp till en timme. Klicka på "
+        "Tickers cache:as i upp till en timme. Klicka på "
         "“Uppdatera watchlist” för att hämta data på nytt."
     )
 
@@ -494,7 +554,9 @@ with tab_risk:
 
         st.subheader("Drawdown från tidigare topp")
 
-        drawdown_chart = risk_data["drawdown"].to_frame(name="Drawdown")
+        drawdown_chart = risk_data["drawdown"].to_frame(
+            name="Drawdown"
+        )
         st.area_chart(drawdown_chart)
 
         st.caption(
